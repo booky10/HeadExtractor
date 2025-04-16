@@ -32,29 +32,33 @@ import com.github.steveice10.opennbt.tag.builtin.ListTag;
 import com.github.steveice10.opennbt.tag.builtin.StringTag;
 import com.github.steveice10.opennbt.tag.builtin.Tag;
 
-import java.io.*;
+import java.io.BufferedInputStream;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteOrder;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
-import java.nio.file.FileSystem;
-import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.Deque;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.function.Consumer;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.InflaterInputStream;
 
 public class HeadExtractor {
     private static final ObjectMapper MAPPER = new ObjectMapper();
-
-    // Adapted from https://stackoverflow.com/a/475217
-    private static final Pattern BASE64_PATTERN = Pattern.compile("\\\\?[\"']((?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=))\\\\?[\"']");
 
     public static void main(String[] args) throws IOException {
         if (args.length != 1) {
@@ -83,7 +87,6 @@ public class HeadExtractor {
         for (Path path : gatherPlayerData(worldPath)) {
             tasks.add(CompletableFuture.runAsync(() -> processDAT(path, headConsumer), executor));
         }
-        gatherFromDataPacks(worldPath, headConsumer);
 
         // Wait for all tasks to be complete
         CompletableFuture.allOf(tasks.toArray(new CompletableFuture[0])).join();
@@ -125,44 +128,6 @@ public class HeadExtractor {
         dataPaths.add(levelDataPath);
         dataPaths.removeIf(path -> !Files.isRegularFile(path) || !path.getFileName().toString().endsWith("dat"));
         return dataPaths;
-    }
-
-    private static void gatherFromDataPacks(Path worldPath, Consumer<String> headConsumer) throws IOException {
-        Path dataPacksPath = worldPath.resolve("datapacks");
-        if (!Files.isDirectory(dataPacksPath)) {
-            return;
-        }
-
-        try (Stream<Path> stream = Files.list(dataPacksPath)) {
-            for (Path dataPackPath : stream.toList()) {
-                if (Files.isDirectory(dataPackPath)) {
-                    processDataPack(dataPackPath, headConsumer);
-                } else if (Files.isRegularFile(dataPackPath) && dataPackPath.getFileName().toString().endsWith("zip")) {
-                    try (FileSystem fileSystem = FileSystems.newFileSystem(dataPackPath, Collections.emptyMap())) {
-                        fileSystem.getRootDirectories().forEach(path -> processDataPack(path, headConsumer));
-                    }
-                }
-            }
-        }
-    }
-
-    private static void processDataPack(Path dataPack, Consumer<String> headConsumer) {
-        try (Stream<Path> stream = Files.walk(dataPack)) {
-            for (Path path : stream.toList()) {
-                if (Files.isRegularFile(path)) {
-                    String filename = path.getFileName().toString();
-                    if (filename.endsWith("json") || filename.endsWith("mcfunction")) {
-                        try {
-                            processString(Files.readString(path), headConsumer);
-                        } catch (IOException e) {
-                            System.err.println("Unable to read " + path + " due to exception: " + e);
-                        }
-                    }
-                }
-            }
-        } catch (IOException e) {
-            System.err.println("Unable to fully process " + dataPack + " due to exception: " + e);
-        }
     }
 
     private static void processDAT(Path datPath, Consumer<String> headConsumer) {
@@ -213,30 +178,10 @@ public class HeadExtractor {
             if (tag instanceof CompoundTag compoundTag) {
                 tags.addAll(compoundTag.values());
             } else if (tag instanceof ListTag listTag) {
-                Class<?> elementType = listTag.getElementType();
-                if (elementType != StringTag.class && elementType != ListTag.class && elementType != CompoundTag.class) {
-                    // The ListTag can't store player profiles
-                    continue;
-                }
-                if (!listTag.getName().equals("textures")) {
-                    listTag.forEach(tags::addLast);
-                    continue;
-                }
-                if (listTag.size() != 0 && listTag.get(0) instanceof CompoundTag texture) {
-                    if (texture.get("Value") instanceof StringTag valueTag) {
-                        headConsumer.accept(valueTag.getValue());
-                    }
-                }
+                tags.addAll(listTag.getValue());
             } else if (tag instanceof StringTag stringTag) {
-                processString(stringTag.getValue(), headConsumer);
+                headConsumer.accept(stringTag.getValue());
             }
-        }
-    }
-
-    private static void processString(String string, Consumer<String> headConsumer) {
-        Matcher m = BASE64_PATTERN.matcher(string);
-        while (m.find()) {
-            headConsumer.accept(m.group(1));
         }
     }
 
