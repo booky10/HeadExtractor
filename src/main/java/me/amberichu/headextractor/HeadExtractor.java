@@ -36,6 +36,7 @@ import java.io.BufferedInputStream;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
 import java.nio.ByteOrder;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
@@ -58,7 +59,9 @@ import java.util.zip.GZIPInputStream;
 import java.util.zip.InflaterInputStream;
 
 public class HeadExtractor {
+
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final String TEXTURE_URL_PATH_PREFIX = "/texture/";
 
     public static void main(String[] args) throws IOException {
         if (args.length != 1) {
@@ -66,7 +69,9 @@ public class HeadExtractor {
             System.exit(-1);
         }
         Set<String> heads = extractHeads(Path.of(args[0]));
-        heads.forEach(System.out::println);
+        for (String head : heads) {
+            System.out.println("- " + head);
+        }
     }
 
     private static Set<String> extractHeads(Path worldPath) throws IOException {
@@ -76,8 +81,9 @@ public class HeadExtractor {
         List<CompletableFuture<?>> tasks = new ArrayList<>();
 
         Consumer<String> headConsumer = head -> {
-            if (validateHead(head)) {
-                heads.add(head);
+            String hash = extractHeadHash(head);
+            if (hash != null) {
+                heads.add(hash);
             }
         };
 
@@ -185,27 +191,36 @@ public class HeadExtractor {
         }
     }
 
-    private static boolean validateHead(String head) {
+    private static String extractHeadHash(String head) {
         try {
             JsonNode node = MAPPER.readTree(Base64.getDecoder().decode(head));
             if (!node.isObject()) {
-                return false;
+                return null;
             }
 
             JsonNode textures = node.get("textures");
             if (textures == null || !textures.isObject()) {
-                return false;
+                return null;
             }
 
             JsonNode skin = textures.get("SKIN");
             if (skin == null || !textures.isObject()) {
-                return false;
+                return null;
             }
 
             JsonNode url = skin.get("url");
-            return url != null && url.isTextual();
+            if (url == null || !url.isTextual()) {
+                return null;
+            }
+
+            String urlPath = URI.create(url.asText()).getPath();
+            if (!urlPath.startsWith(TEXTURE_URL_PATH_PREFIX)) {
+                return null;
+            }
+
+            return urlPath.substring(TEXTURE_URL_PATH_PREFIX.length());
         } catch (Exception e) {
-            return false;
+            return null;
         }
     }
 }
